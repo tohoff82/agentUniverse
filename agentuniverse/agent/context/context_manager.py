@@ -240,8 +240,17 @@ class ContextManager(ComponentBase):
         # Count tokens for new content
         tokens = self._count_tokens(content)
 
+        # No amount of eviction can make a segment larger than the complete
+        # session input allowance fit. Reject it before mutating this session.
+        input_budget = window.calculate_input_tokens()
+        if tokens > input_budget:
+            raise ValueError(
+                f"Context segment ({tokens} tokens) exceeds the session input "
+                f"budget ({input_budget} tokens)"
+            )
+
         # Proactive budget check - make room BEFORE adding
-        if window.total_tokens + tokens > window.calculate_input_tokens():
+        if window.total_tokens + tokens > input_budget:
             self._make_room(window, tokens)
 
         # Create segment
