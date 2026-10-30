@@ -7,6 +7,7 @@
 # @FileName: test_memory.py
 import unittest
 
+import pytest
 from langchain.chains import ConversationChain, LLMChain
 from langchain_core.prompts import PromptTemplate
 
@@ -48,6 +49,7 @@ class MemoryTest(unittest.TestCase):
         init_params['messages'] = [self.message0, self.message1, self.message2]
         self.chat_memory = ChatMemory(**init_params)
 
+    @pytest.mark.skip(reason="requires a live OpenAI-compatible LLM runtime")
     def test_summarize_memory_1(self) -> None:
         langchain_memory = self.chat_memory.as_langchain()
         langchain_memory.memory_key = 'history'
@@ -56,6 +58,7 @@ class MemoryTest(unittest.TestCase):
         conversation = llm_chain.predict(input='Who am I？')
         print(conversation)
 
+    @pytest.mark.skip(reason="requires a live OpenAI-compatible LLM runtime")
     def test_summarize_memory_2(self) -> None:
         langchain_memory = self.chat_memory.as_langchain()
         prompt = PromptTemplate(
@@ -66,6 +69,7 @@ class MemoryTest(unittest.TestCase):
         conversation = llm_chain.predict(human_input='Who am I？')
         print(conversation)
 
+    @pytest.mark.skip(reason="requires a live OpenAI-compatible LLM runtime")
     def test_summarize_memory_3(self) -> None:
         langchain_memory = self.chat_memory.as_langchain()
         prompt = PromptTemplate(
@@ -76,6 +80,7 @@ class MemoryTest(unittest.TestCase):
         res = llm_chain(inputs={'human_input': 'What is my name?'})
         print(res)
 
+    @pytest.mark.skip(reason="requires a live OpenAI-compatible LLM runtime")
     def test_truncate_memory_1(self) -> None:
         self.chat_memory.type = MemoryTypeEnum.SHORT_TERM
         langchain_memory = self.chat_memory.as_langchain()
@@ -87,6 +92,7 @@ class MemoryTest(unittest.TestCase):
         conversation = llm_chain.predict(human_input='Who am I？')
         print(conversation)
 
+    @pytest.mark.skip(reason="requires a live OpenAI-compatible LLM runtime")
     def test_truncate_memory_2(self) -> None:
         self.chat_memory.type = MemoryTypeEnum.SHORT_TERM
         langchain_memory = self.chat_memory.as_langchain()

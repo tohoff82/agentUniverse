@@ -436,10 +436,42 @@ class TestPhase2Integration:
 class TestMemoryIntegration:
     """Integration tests for Memory class with ContextManager."""
 
-    def test_memory_budget_aware_retrieval(self):
+    def test_memory_budget_aware_retrieval(self, monkeypatch):
         """Test that Memory uses budget-aware retrieval when linked to ContextManager."""
+        from types import SimpleNamespace
+
         from agentuniverse.agent.memory.memory import Memory
-        from agentuniverse.agent.memory.message import Message
+        import agentuniverse.agent.memory.memory as memory_module
+        import agentuniverse.agent.context.context_manager_manager as manager_module
+
+        segments = [
+            SimpleNamespace(
+                content="newest",
+                metadata=SimpleNamespace(extra_data={"role": "human"}),
+            ),
+            SimpleNamespace(
+                content="too-large",
+                metadata=SimpleNamespace(extra_data={"role": "assistant"}),
+            ),
+        ]
+
+        class FakeContextManager:
+            def get_context(self, session_id, **kwargs):
+                assert session_id == "test"
+                assert kwargs["limit"] == 1000
+                return segments
+
+        class FakeContextManagerManager:
+            def get_instance_obj(self, name):
+                assert name == "test_manager"
+                return FakeContextManager()
+
+        monkeypatch.setattr(manager_module, "ContextManagerManager", FakeContextManagerManager)
+        monkeypatch.setattr(
+            memory_module,
+            "get_memory_tokens",
+            lambda messages, _llm: {"newest": 2, "too-large": 4}[messages[0].content],
+        )
 
         # Create memory with context manager link
         memory = Memory(
@@ -452,27 +484,52 @@ class TestMemoryIntegration:
         messages = memory.get_with_context_budget(
             session_id='test',
             agent_id='agent1',
-            allocated_tokens=500
+            allocated_tokens=5
         )
 
-        # Should return list (even if empty without actual storage)
-        assert isinstance(messages, list)
+        assert [message.content for message in messages] == ["newest"]
+        assert [message.type for message in messages] == ["human"]
 
-    def test_memory_fallback_without_context_manager(self):
+    def test_memory_fallback_without_context_manager(self, monkeypatch):
         """Test that Memory falls back gracefully without ContextManager."""
         from agentuniverse.agent.memory.memory import Memory
+        import agentuniverse.agent.memory.memory as memory_module
+
+        stored_messages = [
+            memory_module.Message(content="oldest", type="human"),
+            memory_module.Message(content="recent", type="assistant"),
+            memory_module.Message(content="newest", type="human"),
+        ]
+
+        class FakeMemoryStorage:
+            def get(self, session_id, agent_id, **kwargs):
+                assert (session_id, agent_id) == ("test", "agent1")
+                return stored_messages
+
+        class FakeMemoryStorageManager:
+            def get_instance_obj(self, name):
+                assert name == "test_storage"
+                return FakeMemoryStorage()
+
+        monkeypatch.setattr(memory_module, "MemoryStorageManager", FakeMemoryStorageManager)
+        monkeypatch.setattr(
+            memory_module,
+            "get_memory_tokens",
+            lambda messages, _llm: {"oldest": 3, "recent": 2, "newest": 2}[messages[0].content],
+        )
 
         # Create memory without context manager
         memory = Memory(
             name='test_memory',
-            max_tokens=1000
+            max_tokens=1000,
+            memory_retrieval_storage='test_storage',
         )
 
         # Should still work with fallback
         messages = memory.get_with_context_budget(
             session_id='test',
             agent_id='agent1',
-            allocated_tokens=500
+            allocated_tokens=4
         )
 
-        assert isinstance(messages, list)
+        assert [message.content for message in messages] == ["recent", "newest"]
