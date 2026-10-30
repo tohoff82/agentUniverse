@@ -207,7 +207,7 @@ class SqliteMemoryStorage(MemoryStorage):
         """
         if self.engine is None:
             self._init_db()
-        if session_id is None and agent_id is None:
+        if session_id is None and agent_id is None and trace_id is None:
             return
         with self.session() as session:
             model_class = self.memory_converter.get_sql_model_class()
@@ -231,9 +231,9 @@ class SqliteMemoryStorage(MemoryStorage):
                                         target_type_col == ConversationMessageSourceType.AGENT.value)
                 agent_id_col = or_(source_condition, target_condition)
 
-                query.filter(agent_id_col)
+                query = query.filter(agent_id_col)
             if trace_id is not None:
-                query.filter(getattr(model_class, 'trace_id') == trace_id)
+                query = query.filter(getattr(model_class, 'trace_id') == trace_id)
 
             # execute delete and commit the session
             query.delete(synchronize_session=False)
@@ -276,6 +276,8 @@ class SqliteMemoryStorage(MemoryStorage):
         Returns:
             List[Message]: The list of messages retrieved from the memory.
         """
+        if top_k <= 0:
+            return []
         if self.session is None:
             self._init_db()
         with self.session() as session:
