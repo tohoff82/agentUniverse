@@ -102,6 +102,8 @@ class RedisContextStore(ContextStore):
         if not session_id:
             raise ValueError("session_id is required for Redis storage")
 
+        self.validate_segment_sessions(segments, session_id)
+
         if not self._redis:
             raise RuntimeError("Redis not initialized")
 
@@ -197,7 +199,12 @@ class RedisContextStore(ContextStore):
         """
         # Get all segments and do in-memory search
         # For production, consider Redis full-text search module
-        segments = self.get(session_id, limit=1000)
+        segments = self.get(
+            session_id,
+            context_type=kwargs.get("context_type"),
+            priority=kwargs.get("priority"),
+            limit=1000,
+        )
 
         query_lower = query.lower()
         query_terms = query_lower.split()

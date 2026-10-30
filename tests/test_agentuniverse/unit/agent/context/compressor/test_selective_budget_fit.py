@@ -39,9 +39,8 @@ def test_all_optional_segments_too_large_returns_empty():
 
 
 @pytest.mark.parametrize('mandatory', ['critical', 'type'])
-def test_mandatory_preservation_can_still_exceed_budget(mandatory):
+def test_mandatory_preservation_fails_closed_when_it_exceeds_budget(mandatory):
     doc = segment('mandatory', 100, ContextPriority.CRITICAL if mandatory == 'critical' else ContextPriority.LOW, 1)
     kwargs = {'preserve_types': [ContextType.CONVERSATION]} if mandatory == 'type' else {}
-    result, metrics = SelectiveCompressor().compress([doc], 20, **kwargs)
-    assert [item.id for item in result] == ['mandatory']
-    assert metrics.compressed_tokens == 100
+    with pytest.raises(ValueError, match='Mandatory context .* exceeds target'):
+        SelectiveCompressor().compress([doc], 20, **kwargs)

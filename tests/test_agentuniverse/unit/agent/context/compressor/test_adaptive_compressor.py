@@ -128,7 +128,9 @@ class TestAdaptiveCompressor:
                 )
             ))
 
-        target_tokens = 50
+        # Seven CRITICAL segments require 70 tokens; a smaller target now
+        # correctly fails closed in the selective strategy.
+        target_tokens = 70
 
         compressed, metrics = compressor.compress(
             segments,

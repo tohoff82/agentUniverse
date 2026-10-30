@@ -86,7 +86,9 @@ class SelectiveCompressor(ContextCompressor):
             Tuple of (selected_segments, compression_metrics)
 
         Raises:
-            ValueError: If target_tokens <= 0 or segments is empty
+            ValueError: If target_tokens is non-positive, or if mandatory
+                CRITICAL/preserve_types content cannot fit within target_tokens.
+                Mandatory content is never returned over budget.
         """
         start_time = time.time()
 
@@ -137,13 +139,11 @@ class SelectiveCompressor(ContextCompressor):
         selected = priority_groups.get(ContextPriority.CRITICAL, []).copy()
         remaining_tokens = target_tokens - self.calculate_total_tokens(selected)
 
-        if remaining_tokens <= 0:
-            # CRITICAL alone exceeds target
-            elapsed_ms = (time.time() - start_time) * 1000
-            metrics = self.create_metrics(
-                original_segments, selected, elapsed_ms, "selective"
+        if remaining_tokens < 0:
+            raise ValueError(
+                "Mandatory context (CRITICAL priority) exceeds target_tokens "
+                f"({self.calculate_total_tokens(selected)} > {target_tokens})"
             )
-            return selected, metrics
 
         # Step 3: Always preserve specified types (e.g., SYSTEM, TASK)
         type_preserved = self._select_by_type(segments, preserve_types, selected)
@@ -151,12 +151,12 @@ class SelectiveCompressor(ContextCompressor):
             selected.extend(type_preserved)
             remaining_tokens -= self.calculate_total_tokens(type_preserved)
 
-        if remaining_tokens <= 0:
-            elapsed_ms = (time.time() - start_time) * 1000
-            metrics = self.create_metrics(
-                original_segments, selected, elapsed_ms, "selective"
+        if remaining_tokens < 0:
+            raise ValueError(
+                "Mandatory context (CRITICAL priority or preserve_types) exceeds "
+                f"target_tokens ({self.calculate_total_tokens(selected)} > "
+                f"{target_tokens})"
             )
-            return selected, metrics
 
         # Step 4: Select HIGH priority segments by relevance
         high_selected = self._select_high_priority(

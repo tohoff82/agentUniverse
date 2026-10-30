@@ -50,6 +50,18 @@ class ContextStore(ComponentBase):
             "total_search_time_ms": 0.0,
         }
 
+    @staticmethod
+    def validate_segment_sessions(
+        segments: List[ContextSegment], session_id: str
+    ) -> None:
+        """Reject explicit segment lineage that conflicts with the store key."""
+        for segment in segments:
+            if segment.session_id is not None and segment.session_id != session_id:
+                raise ValueError(
+                    f"Store session_id {session_id!r} does not match segment "
+                    f"session_id {segment.session_id!r} for segment {segment.id!r}"
+                )
+
     @abstractmethod
     def add(self, segments: List[ContextSegment], **kwargs) -> None:
         """Store context segments.

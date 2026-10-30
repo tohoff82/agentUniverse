@@ -176,6 +176,23 @@ class ContextManager(ComponentBase):
         Returns:
             Created ContextWindow instance
         """
+        window = self._build_context_window(
+            session_id=session_id,
+            agent_id=agent_id,
+            task_type=task_type,
+            **kwargs,
+        )
+        self._windows[session_id] = window
+        return window
+
+    def _build_context_window(
+        self,
+        session_id: str,
+        agent_id: Optional[str] = None,
+        task_type: Optional[str] = None,
+        **kwargs
+    ) -> ContextWindow:
+        """Build an unregistered window so callers can validate atomically."""
         # Get task-specific configuration
         task_config = self.task_configs.get(task_type or "dialogue", {})
 
@@ -202,7 +219,6 @@ class ContextManager(ComponentBase):
             compression_strategy=task_config.get("compression_strategy", "adaptive"),
         )
 
-        self._windows[session_id] = window
         return window
 
     def add_context(
@@ -233,9 +249,10 @@ class ContextManager(ComponentBase):
         """
         # Get or create window
         window = self._windows.get(session_id)
-        if not window:
-            # Auto-create with defaults if not exists
-            window = self.create_context_window(session_id)
+        auto_created = window is None
+        if auto_created:
+            # Keep the candidate unregistered until its input is known to fit.
+            window = self._build_context_window(session_id)
 
         # Count tokens for new content
         tokens = self._count_tokens(content)
@@ -252,6 +269,11 @@ class ContextManager(ComponentBase):
         # Proactive budget check - make room BEFORE adding
         if window.total_tokens + tokens > input_budget:
             self._make_room(window, tokens)
+
+        if window.total_tokens + tokens > input_budget:
+            raise ValueError(
+                "Unable to create sufficient context capacity for the new segment"
+            )
 
         # Create segment
         segment = ContextSegment(
@@ -271,6 +293,9 @@ class ContextManager(ComponentBase):
         # Update window tracking
         window.add_segment_id(segment.id)
         window.update_total_tokens(tokens, operation="add")
+
+        if auto_created:
+            self._windows[session_id] = window
 
         return segment
 
@@ -408,7 +433,7 @@ class ContextManager(ComponentBase):
         if current_available >= needed_tokens:
             return  # Already have space
 
-        tokens_to_free = needed_tokens - current_available
+        target_tokens = window.calculate_input_tokens() - needed_tokens
 
         # Strategy 1: Quick prune of expired and EPHEMERAL segments
         pruned = self._hot_store.prune(
@@ -434,9 +459,6 @@ class ContextManager(ComponentBase):
             if not segments:
                 return  # Nothing to compress
 
-            # Calculate target tokens for compression
-            target_tokens = window.calculate_input_tokens()
-
             try:
                 # Use compressor to intelligently compress segments
                 compressed, metrics = self._compressor.compress(
@@ -447,18 +469,25 @@ class ContextManager(ComponentBase):
                     preserve_types=[ContextType.SYSTEM, ContextType.TASK]  # Never compress these
                 )
 
-                # Replace segments in storage
+                compressed_tokens = sum(seg.tokens for seg in compressed)
+                if compressed_tokens > target_tokens:
+                    raise ValueError(
+                        "Compressor result does not create the required capacity"
+                    )
+
+                # Replace segments only after the result proves the capacity.
                 self._hot_store.delete(window.session_id)  # Clear old segments
                 self._hot_store.add(compressed, session_id=window.session_id)  # Add compressed
 
                 # Update window tracking
-                window.total_tokens = sum(seg.tokens for seg in compressed)
+                window.total_tokens = compressed_tokens
                 window.segment_ids = [seg.id for seg in compressed]
 
                 # Log compression metrics (optional - for debugging/monitoring)
                 # print(f"Compression: {metrics.compression_ratio:.2%}, Loss: {metrics.information_loss_estimate:.2%}")
 
-                return  # Compression successful
+                if window.calculate_available_tokens() >= needed_tokens:
+                    return  # Compression successfully created enough room
 
             except Exception as e:
                 # Compression failed, fall back to simple eviction
@@ -484,7 +513,8 @@ class ContextManager(ComponentBase):
 
         eviction_candidates = sorted(segments, key=eviction_key)
 
-        # Remove segments until we have enough space
+        # Remove segments until the retained set fits alongside the incoming one.
+        tokens_to_free = max(0, window.total_tokens - target_tokens)
         freed_tokens = 0
         to_remove = []
 

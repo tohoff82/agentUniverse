@@ -137,6 +137,8 @@ class ChromaContextStore(ContextStore):
         if not session_id:
             raise ValueError("session_id is required for Chroma storage")
 
+        self.validate_segment_sessions(segments, session_id)
+
         if not self._collection:
             raise RuntimeError("Chroma collection not initialized")
 

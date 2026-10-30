@@ -54,6 +54,10 @@ class RamContextStore(ContextStore):
         if not session_id:
             raise ValueError("session_id is required for add()")
 
+        # Validate the complete batch before creating storage or rebinding any
+        # segment whose lineage is currently unset.
+        self.validate_segment_sessions(segments, session_id)
+
         # Initialize session storage if not exists
         if session_id not in self._storage:
             self._storage[session_id] = OrderedDict()

@@ -145,7 +145,10 @@ class TestSelectiveCompressor:
         critical_segments = [s for s in sample_segments if s.priority == ContextPriority.CRITICAL]
         critical_ids = {s.id for s in critical_segments}
 
-        target_tokens = 50  # Very low to force aggressive compression
+        # Mandatory SYSTEM/TASK content totals 210 tokens. Keep the target at
+        # that boundary so preservation is tested without claiming over-budget
+        # output satisfies the requested fit.
+        target_tokens = 210
 
         compressed, metrics = compressor.compress(
             sample_segments,
@@ -299,7 +302,7 @@ class TestSelectiveCompressor:
         """Test that specified types are preserved."""
         compressed, metrics = compressor.compress(
             sample_segments,
-            target_tokens=100,
+            target_tokens=210,
             preserve_types=[ContextType.SYSTEM, ContextType.TASK]
         )
 
