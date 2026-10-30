@@ -87,7 +87,7 @@ class ISWorkPattern(WorkPattern):
                     checkpoint_count,
                     execution_context
                 )
-                if correction_result:
+                if self._is_materially_applicable_correction(correction_result):
                     execution_context['corrections_made'] += 1
                     corrected = True
                     # Feed the corrected content back so the next supervision round
@@ -169,7 +169,7 @@ class ISWorkPattern(WorkPattern):
                     checkpoint_count,
                     execution_context
                 )
-                if correction_result:
+                if self._is_materially_applicable_correction(correction_result):
                     execution_context['corrections_made'] += 1
                     corrected = True
                     # Feed the corrected content back so the next supervision round
@@ -296,6 +296,17 @@ class ISWorkPattern(WorkPattern):
             correction_result = await self.implementation.async_run(**correction_input)
             checkpoint_result['correction_result'] = correction_result.to_dict()
         return correction_result.to_dict()
+
+    @staticmethod
+    def _is_materially_applicable_correction(correction_result) -> bool:
+        """Return whether a correction contains represented replacement content."""
+        if not isinstance(correction_result, dict):
+            return False
+        return any(
+            isinstance(correction_result.get(key), str)
+            and bool(correction_result[key].strip())
+            for key in ('output', 'checkpoint_output')
+        )
 
     def _validate_work_pattern_members(self):
         """Validate that agents are of the correct type."""

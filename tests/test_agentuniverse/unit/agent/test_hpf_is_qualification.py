@@ -14,6 +14,7 @@ from agentuniverse.agent.output_object import OutputObject
 from agentuniverse.agent.template.implementation_agent_template import (
     ImplementationAgentTemplate,
 )
+from agentuniverse.agent.template.is_agent_template import ISAgentTemplate
 from agentuniverse.agent.template.supervision_agent_template import (
     SupervisionAgentTemplate,
 )
@@ -58,6 +59,8 @@ class QualificationImplementation(ImplementationAgentTemplate):
             corrected = cls.correction_outputs.get(checkpoint)
             if corrected is None:
                 return {}
+            if isinstance(corrected, dict):
+                return corrected
             return {"output": corrected, "checkpoint_output": corrected}
 
         current = f"impl-{checkpoint}<-{previous or 'seed'}"
@@ -237,6 +240,82 @@ def test_is_06_unavailable_correction_is_not_applied_or_leaked(asynchronous):
         "impl-0<-seed",
         "impl-1<-impl-0<-seed",
     )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    "unavailable_correction",
+    [
+        {"output": "", "checkpoint_output": ""},
+        {"output": " \t", "checkpoint_output": "\n "},
+    ],
+    ids=["production-shaped-blank", "production-shaped-whitespace"],
+)
+def test_is_06a_shaped_blank_correction_is_not_applied_or_leaked(
+    asynchronous,
+    unavailable_correction,
+):
+    result, events = _run(
+        asynchronous=asynchronous,
+        decisions=[True, False],
+        correction_outputs={0: unavailable_correction},
+        max_corrections=1,
+    )
+
+    context = result["execution_context"]
+    assert result["result"][0]["correction_result"] == unavailable_correction
+    assert context["corrections_made"] == 0
+    assert [item["corrected"] for item in context["checkpoint_history"]] == [False, False]
+    assert context["checkpoint_history"][0]["implementation"]["output"] == "impl-0<-seed"
+    assert events[0][2] == (
+        "implementation",
+        1,
+        "impl-0<-seed",
+        "impl-1<-impl-0<-seed",
+    )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_is_06b_blank_after_success_preserves_current_checkpoint_state(asynchronous):
+    blank_correction = {"output": "", "checkpoint_output": ""}
+    result, events = _run(
+        asynchronous=asynchronous,
+        decisions=[True, True, False],
+        correction_outputs={0: "corrected-0", 1: blank_correction},
+        max_corrections=2,
+    )
+
+    context = result["execution_context"]
+    history = context["checkpoint_history"]
+    assert context["corrections_made"] == 1
+    assert [item["corrected"] for item in history] == [True, False, False]
+    assert result["result"][1]["correction_result"] == blank_correction
+    assert history[1]["implementation"]["output"] == "impl-1<-corrected-0"
+    assert history[2]["implementation"]["output"] == "impl-2<-impl-1<-corrected-0"
+    assert events[0][4] == (
+        "implementation",
+        2,
+        "impl-1<-corrected-0",
+        "impl-2<-impl-1<-corrected-0",
+    )
+    assert ISAgentTemplate().parse_result(result)["output"] == (
+        "impl-2<-impl-1<-corrected-0"
+    )
+
+
+@pytest.mark.parametrize(
+    "correction_result",
+    [
+        {},
+        {"output": "", "checkpoint_output": ""},
+        {"output": " ", "checkpoint_output": "\t"},
+        {"metadata": "only"},
+        None,
+        ["not", "a", "mapping"],
+    ],
+)
+def test_is_06c_unrepresented_correction_is_fail_closed(correction_result):
+    assert ISWorkPattern._is_materially_applicable_correction(correction_result) is False
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

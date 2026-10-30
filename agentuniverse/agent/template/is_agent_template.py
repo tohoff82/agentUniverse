@@ -287,11 +287,23 @@ class ISAgentTemplate(AgentTemplate):
     @staticmethod
     def _get_effective_result(checkpoint_result: dict) -> dict:
         """Return the result that should represent a completed checkpoint."""
-        return (
-            checkpoint_result.get('effective_result')
-            or checkpoint_result.get('correction_result')
-            or checkpoint_result.get('implementation_result')
-            or {}
+        explicit_result = checkpoint_result.get('effective_result')
+        if explicit_result:
+            return explicit_result
+
+        correction_result = checkpoint_result.get('correction_result')
+        if ISAgentTemplate._has_material_output(correction_result):
+            return correction_result
+        return checkpoint_result.get('implementation_result') or {}
+
+    @staticmethod
+    def _has_material_output(result) -> bool:
+        """Return whether a represented result contains non-whitespace output."""
+        if not isinstance(result, dict):
+            return False
+        return any(
+            isinstance(result.get(key), str) and bool(result[key].strip())
+            for key in ('output', 'checkpoint_output')
         )
 
     def customized_execute(self, work_pattern, input_object: InputObject,

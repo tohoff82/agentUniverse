@@ -108,3 +108,25 @@ def test_explicit_effective_result_takes_precedence():
     result = ISAgentTemplate().parse_result(planner_result)
 
     assert result["output"] == "accepted result"
+
+
+def test_blank_shaped_correction_does_not_replace_final_implementation_output():
+    planner_result = {
+        "result": [
+            {
+                "implementation_result": {"checkpoint_output": "current implementation"},
+                "correction_result": {"output": " ", "checkpoint_output": "\n"},
+            }
+        ],
+        "execution_context": {"corrections_made": 0},
+    }
+
+    result = ISAgentTemplate().parse_result(planner_result)
+
+    assert result["output"] == "current implementation"
+    assert result["checkpoint_results"][-1]["effective_result"] == {
+        "checkpoint_output": "current implementation"
+    }
+    assert result["full_output"].endswith(
+        "=== Final Output ===\ncurrent implementation"
+    )
