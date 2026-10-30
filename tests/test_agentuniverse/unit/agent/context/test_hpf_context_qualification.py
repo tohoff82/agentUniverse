@@ -8,6 +8,12 @@ import pytest
 from agentuniverse.agent.context.compressor.selective_compressor import (
     SelectiveCompressor,
 )
+from agentuniverse.agent.context.compressor.adaptive_compressor import (
+    AdaptiveCompressor,
+)
+from agentuniverse.agent.context.compressor.summarize_compressor import (
+    SummarizeCompressor,
+)
 from agentuniverse.agent.context.compressor.truncate_compressor import (
     TruncateCompressor,
 )
@@ -240,6 +246,170 @@ def test_selective_compressor_fails_closed_when_mandatory_content_exceeds_target
 
     with pytest.raises(ValueError, match="Mandatory context .* exceeds target"):
         SelectiveCompressor().compress([segment], target_tokens=20, **kwargs)
+
+
+def _adaptive_compressor():
+    compressor = AdaptiveCompressor(name="qualification-adaptive")
+    compressor._truncate_compressor = TruncateCompressor(name="qualification-truncate")
+    compressor._selective_compressor = SelectiveCompressor(name="qualification-selective")
+    compressor._summarize_compressor = SummarizeCompressor(name="qualification-summarize")
+    compressor._summarize_compressor._llm = object()
+    return compressor
+
+
+@pytest.mark.parametrize(
+    "force_strategy", [None, "truncate", "selective", "summarize", "hybrid"]
+)
+@pytest.mark.parametrize("mandatory_kind", ["critical", "preserve_type"])
+def test_adaptive_boundary_preserves_mandatory_segments_within_budget(
+    force_strategy,
+    mandatory_kind,
+):
+    mandatory = _segment(
+        "mandatory",
+        "mandatory-content",
+        30,
+        session_id="session-a",
+        priority=(
+            ContextPriority.CRITICAL
+            if mandatory_kind == "critical"
+            else ContextPriority.LOW
+        ),
+    )
+    optional = _segment(
+        "optional", "optional-content", 80, session_id="session-a"
+    )
+    before = deepcopy(mandatory.model_dump())
+    kwargs = {}
+    if force_strategy is not None:
+        kwargs["force_strategy"] = force_strategy
+    if mandatory_kind == "preserve_type":
+        kwargs["preserve_types"] = [ContextType.CONVERSATION]
+        optional.type = ContextType.BACKGROUND
+
+    result, metrics = _adaptive_compressor().compress(
+        [mandatory, optional], target_tokens=50, **kwargs
+    )
+
+    retained = next(item for item in result if item.id == mandatory.id)
+    assert retained is mandatory
+    assert retained.model_dump() == before
+    assert sum(item.tokens for item in result) == metrics.compressed_tokens <= 50
+
+
+@pytest.mark.parametrize(
+    "force_strategy", [None, "truncate", "selective", "summarize", "hybrid"]
+)
+def test_adaptive_boundary_fails_closed_when_mandatory_exceeds_target(force_strategy):
+    mandatory = _segment(
+        "mandatory",
+        "mandatory-content",
+        60,
+        session_id="session-a",
+        priority=ContextPriority.CRITICAL,
+    )
+    kwargs = {"force_strategy": force_strategy} if force_strategy else {}
+
+    with pytest.raises(ValueError, match="Mandatory context .* exceeds target"):
+        _adaptive_compressor().compress([mandatory], target_tokens=50, **kwargs)
+
+
+@pytest.mark.parametrize("compressor_kind", ["truncate", "summarize"])
+@pytest.mark.parametrize("mandatory_kind", ["critical", "preserve_type"])
+def test_direct_compressors_fail_closed_for_over_budget_mandatory_content(
+    compressor_kind,
+    mandatory_kind,
+):
+    mandatory = _segment(
+        "mandatory",
+        "mandatory-content",
+        60,
+        session_id="session-a",
+        priority=(
+            ContextPriority.CRITICAL
+            if mandatory_kind == "critical"
+            else ContextPriority.LOW
+        ),
+    )
+    kwargs = (
+        {"preserve_types": [ContextType.CONVERSATION]}
+        if mandatory_kind == "preserve_type"
+        else {}
+    )
+    if compressor_kind == "truncate":
+        compressor = TruncateCompressor()
+    else:
+        compressor = SummarizeCompressor()
+        compressor._llm = object()
+
+    with pytest.raises(ValueError, match="Mandatory context .* exceeds target"):
+        compressor.compress([mandatory], target_tokens=50, **kwargs)
+
+
+def test_existing_session_capacity_failure_is_atomic():
+    manager = _manager()
+    window = manager.create_context_window(
+        "session-a", max_tokens=100, reserved_tokens=20
+    )
+    critical = manager.add_context(
+        "session-a",
+        "C" * 240,
+        ContextType.SYSTEM,
+        ContextPriority.CRITICAL,
+    )
+    removable = manager.add_context(
+        "session-a",
+        "R" * 40,
+        ContextType.BACKGROUND,
+        ContextPriority.LOW,
+    )
+    storage_before = deepcopy(manager._hot_store._storage)
+    window_before = deepcopy(window.model_dump())
+
+    with pytest.raises(ValueError, match="Unable to create sufficient context capacity"):
+        manager.add_context(
+            "session-a",
+            "N" * 120,
+            ContextType.CONVERSATION,
+            ContextPriority.HIGH,
+        )
+
+    assert manager._hot_store._storage == storage_before
+    assert window.model_dump() == window_before
+    assert window.segment_ids == [critical.id, removable.id]
+    assert window.total_tokens == 70
+
+
+def test_existing_session_make_room_commits_only_a_successful_plan():
+    manager = _manager()
+    window = manager.create_context_window(
+        "session-a", max_tokens=100, reserved_tokens=20
+    )
+    critical = manager.add_context(
+        "session-a",
+        "C" * 160,
+        ContextType.SYSTEM,
+        ContextPriority.CRITICAL,
+    )
+    removable = manager.add_context(
+        "session-a",
+        "R" * 120,
+        ContextType.BACKGROUND,
+        ContextPriority.LOW,
+    )
+
+    incoming = manager.add_context(
+        "session-a",
+        "N" * 120,
+        ContextType.CONVERSATION,
+        ContextPriority.HIGH,
+    )
+
+    retained_ids = {item.id for item in manager.get_context("session-a")}
+    assert retained_ids == {critical.id, incoming.id}
+    assert removable.id not in retained_ids
+    assert window.total_tokens == 70
+    assert window.total_tokens <= window.calculate_input_tokens()
 
 
 class _RedisHashFake:

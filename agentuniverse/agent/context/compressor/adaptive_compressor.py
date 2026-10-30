@@ -147,36 +147,75 @@ class AdaptiveCompressor(ContextCompressor):
         if target_tokens <= 0:
             raise ValueError(f"Invalid target_tokens: {target_tokens}")
 
+        preserve_types = set(kwargs.get("preserve_types", []))
+        mandatory = [
+            segment
+            for segment in segments
+            if (
+                segment.priority == ContextPriority.CRITICAL
+                or segment.type in preserve_types
+            )
+        ]
+        optional = [segment for segment in segments if segment not in mandatory]
+        mandatory_tokens = self.calculate_total_tokens(mandatory)
+        if mandatory_tokens > target_tokens:
+            raise ValueError(
+                "Mandatory context (CRITICAL priority or preserve_types) exceeds "
+                f"target_tokens ({mandatory_tokens} > {target_tokens})"
+            )
+
         # Check for forced strategy
         force_strategy = kwargs.get("force_strategy")
         if force_strategy:
-            return self._execute_strategy(
-                force_strategy, segments, target_tokens, kwargs
+            selected_strategy = CompressionStrategy(force_strategy)
+        else:
+            # Step 1: Analyze segment characteristics
+            analysis = self._analyze_segments(segments, target_tokens)
+
+            # Step 2: Get constraints
+            time_limit_ms = kwargs.get("time_limit_ms", self.max_compression_time_ms)
+            min_quality = kwargs.get("min_quality", self.quality_threshold)
+
+            # Step 3: Select strategy
+            selected_strategy = self._select_strategy(
+                analysis, time_limit_ms, min_quality
             )
 
-        # Step 1: Analyze segment characteristics
-        analysis = self._analyze_segments(segments, target_tokens)
+        optional_budget = target_tokens - mandatory_tokens
 
-        # Step 2: Get constraints
-        time_limit_ms = kwargs.get("time_limit_ms", self.max_compression_time_ms)
-        min_quality = kwargs.get("min_quality", self.quality_threshold)
+        # Step 4: Execute only against optional content. Mandatory objects are
+        # reattached unchanged at this public boundary for every strategy.
+        if optional and optional_budget > 0:
+            compressed_optional, _ = self._execute_strategy(
+                selected_strategy, optional, optional_budget, kwargs
+            )
+        else:
+            compressed_optional = []
 
-        # Step 3: Select strategy
-        selected_strategy = self._select_strategy(
-            analysis, time_limit_ms, min_quality
-        )
+        if self.calculate_total_tokens(compressed_optional) > optional_budget:
+            raise ValueError(
+                "Compression strategy returned content exceeding target_tokens"
+            )
 
-        # Step 4: Execute compression
-        compressed, metrics = self._execute_strategy(
-            selected_strategy, segments, target_tokens, kwargs
-        )
+        result = mandatory + compressed_optional
+        result_tokens = self.calculate_total_tokens(result)
+        if result_tokens > target_tokens:
+            raise ValueError(
+                "Compression strategy returned content exceeding target_tokens"
+            )
 
         # Update metrics with selection info
         elapsed_ms = (time.time() - start_time) * 1000
+        metrics = self.create_metrics(
+            segments,
+            result,
+            elapsed_ms,
+            f"adaptive_{selected_strategy.value}",
+        )
         metrics.strategy_used = f"adaptive_{selected_strategy.value}"
         metrics.compression_time_ms = elapsed_ms
 
-        return compressed, metrics
+        return result, metrics
 
     def _analyze_segments(
         self,

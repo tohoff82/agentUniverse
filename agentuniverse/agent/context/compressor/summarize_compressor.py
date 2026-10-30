@@ -107,33 +107,44 @@ class SummarizeCompressor(ContextCompressor):
         if target_tokens <= 0:
             raise ValueError(f"Invalid target_tokens: {target_tokens}")
 
-        if not self._llm:
-            raise RuntimeError("LLM not initialized for summarization")
-
         original_segments = segments.copy()
         preserve_ids = set(kwargs.get("preserve_segments", []))
+        preserve_types = set(kwargs.get("preserve_types", []))
 
-        # Step 1: Separate CRITICAL and preserve_ids
-        critical_segments = [
+        # Step 1: Separate all mandatory content.
+        mandatory_segments = [
             seg for seg in segments
-            if seg.priority == ContextPriority.CRITICAL or seg.id in preserve_ids
+            if (
+                seg.priority == ContextPriority.CRITICAL
+                or seg.id in preserve_ids
+                or seg.type in preserve_types
+            )
         ]
         summarizable = [
             seg for seg in segments
-            if seg.priority != ContextPriority.CRITICAL and seg.id not in preserve_ids
+            if seg not in mandatory_segments
         ]
 
-        critical_tokens = self.calculate_total_tokens(critical_segments)
+        mandatory_tokens = self.calculate_total_tokens(mandatory_segments)
 
-        if critical_tokens >= target_tokens:
-            # CRITICAL alone exceeds target, return as-is
+        if mandatory_tokens > target_tokens:
+            raise ValueError(
+                "Mandatory context (CRITICAL priority, preserve_segments, or "
+                f"preserve_types) exceeds target_tokens ({mandatory_tokens} > "
+                f"{target_tokens})"
+            )
+
+        if mandatory_tokens == target_tokens:
             elapsed_ms = (time.time() - start_time) * 1000
             metrics = self.create_metrics(
-                original_segments, critical_segments, elapsed_ms, "summarize"
+                original_segments, mandatory_segments, elapsed_ms, "summarize"
             )
-            return critical_segments, metrics
+            return mandatory_segments, metrics
 
-        available_tokens = target_tokens - critical_tokens
+        if not self._llm:
+            raise RuntimeError("LLM not initialized for summarization")
+
+        available_tokens = target_tokens - mandatory_tokens
 
         # Step 2: Group segments for summarization
         groups = self._group_for_summarization(summarizable)
@@ -167,7 +178,7 @@ class SummarizeCompressor(ContextCompressor):
                 tokens_used += summary_seg.tokens
 
         # Step 4: Combine results
-        result = critical_segments + summarized
+        result = mandatory_segments + summarized
 
         elapsed_ms = (time.time() - start_time) * 1000
         metrics = self.create_metrics(

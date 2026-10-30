@@ -14,6 +14,7 @@ The ContextManager is responsible for:
 - Task-adaptive configuration
 """
 
+from copy import deepcopy
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
@@ -45,6 +46,8 @@ class ContextManager(ComponentBase):
     """
 
     component_type: ComponentEnum = ComponentEnum.CONTEXT_MANAGER
+
+    name: str = ""
 
     hot_store_name: str = "ram_context_store"
     warm_store_name: Optional[str] = None
@@ -433,17 +436,58 @@ class ContextManager(ComponentBase):
         if current_available >= needed_tokens:
             return  # Already have space
 
+        # Capacity planning must not mutate the live store or window. This is
+        # especially important when removable context exists but protected
+        # context still makes the requested capacity impossible.
+        try:
+            candidate_store = deepcopy(self._hot_store)
+            candidate_window = window.model_copy(deep=True)
+        except Exception as exc:
+            raise ValueError(
+                "Unable to create sufficient context capacity for the new segment"
+            ) from exc
+
+        self._make_room_in_store(candidate_store, candidate_window, needed_tokens)
+
+        if candidate_window.calculate_available_tokens() < needed_tokens:
+            raise ValueError(
+                "Unable to create sufficient context capacity for the new segment"
+            )
+
+        retained = candidate_store.get(candidate_window.session_id)
+        retained_tokens = sum(segment.tokens for segment in retained)
+        target_tokens = candidate_window.calculate_input_tokens() - needed_tokens
+        if retained_tokens > target_tokens:
+            raise ValueError(
+                "Unable to create sufficient context capacity for the new segment"
+            )
+
+        # Commit only a plan that has proven the required capacity.
+        self._hot_store.delete(window.session_id)
+        if retained:
+            self._hot_store.add(retained, session_id=window.session_id)
+        window.total_tokens = retained_tokens
+        window.segment_ids = [segment.id for segment in retained]
+
+    def _make_room_in_store(
+        self,
+        store: ContextStore,
+        window: ContextWindow,
+        needed_tokens: int,
+    ) -> None:
+        """Apply capacity strategies to an isolated candidate store/window."""
+
         target_tokens = window.calculate_input_tokens() - needed_tokens
 
         # Strategy 1: Quick prune of expired and EPHEMERAL segments
-        pruned = self._hot_store.prune(
+        pruned = store.prune(
             window.session_id,
             min_priority=ContextPriority.LOW  # Remove LOW and EPHEMERAL
         )
 
         if pruned > 0:
             # Recalculate window tokens after pruning
-            remaining = self._hot_store.get(window.session_id)
+            remaining = store.get(window.session_id)
             new_total = sum(seg.tokens for seg in remaining)
             window.total_tokens = new_total
             window.segment_ids = [seg.id for seg in remaining]
@@ -454,7 +498,7 @@ class ContextManager(ComponentBase):
 
         # Strategy 2: Intelligent compression (NEW in Phase 2)
         if self.enable_compression and self._compressor:
-            segments = self._hot_store.get(window.session_id)
+            segments = store.get(window.session_id)
 
             if not segments:
                 return  # Nothing to compress
@@ -476,8 +520,8 @@ class ContextManager(ComponentBase):
                     )
 
                 # Replace segments only after the result proves the capacity.
-                self._hot_store.delete(window.session_id)  # Clear old segments
-                self._hot_store.add(compressed, session_id=window.session_id)  # Add compressed
+                store.delete(window.session_id)  # Clear old segments
+                store.add(compressed, session_id=window.session_id)  # Add compressed
 
                 # Update window tracking
                 window.total_tokens = compressed_tokens
@@ -494,7 +538,7 @@ class ContextManager(ComponentBase):
                 pass
 
         # Strategy 3: Fallback - Simple eviction by priority and decay
-        segments = self._hot_store.get(window.session_id)
+        segments = store.get(window.session_id)
 
         # Sort by: priority (lower first), decay score (lower first), last_accessed (older first)
         def eviction_key(seg):
@@ -529,7 +573,11 @@ class ContextManager(ComponentBase):
                 break
 
         if to_remove:
-            self.delete_context(window.session_id, segment_ids=to_remove)
+            removed = [segment for segment in segments if segment.id in to_remove]
+            store.delete(window.session_id, segment_ids=to_remove)
+            window.total_tokens -= sum(segment.tokens for segment in removed)
+            for segment_id in to_remove:
+                window.remove_segment_id(segment_id)
 
     def _count_tokens(self, content: str) -> int:
         """Count tokens in content using LLM tokenizer.

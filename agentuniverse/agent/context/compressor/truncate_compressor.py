@@ -77,38 +77,43 @@ class TruncateCompressor(ContextCompressor):
 
         original_segments = segments.copy()
 
-        # Step 1: Separate CRITICAL from other segments
-        critical_segments = [
-            seg for seg in segments if seg.priority == ContextPriority.CRITICAL
+        preserve_types = set(kwargs.get("preserve_types", []))
+
+        # Step 1: Separate mandatory content from compressible content.
+        mandatory_segments = [
+            seg for seg in segments
+            if seg.priority == ContextPriority.CRITICAL or seg.type in preserve_types
         ]
         other_segments = [
-            seg for seg in segments if seg.priority != ContextPriority.CRITICAL
+            seg for seg in segments if seg not in mandatory_segments
         ]
 
-        critical_tokens = self.calculate_total_tokens(critical_segments)
+        mandatory_tokens = self.calculate_total_tokens(mandatory_segments)
 
-        # Step 2: Check if CRITICAL alone exceeds target
-        if critical_tokens >= target_tokens:
-            # Even CRITICAL needs truncation (rare case)
-            compressed = self._truncate_segments(
-                critical_segments, target_tokens, preserve_all=True
+        # Step 2: Mandatory content is never truncated or returned over budget.
+        if mandatory_tokens > target_tokens:
+            raise ValueError(
+                "Mandatory context (CRITICAL priority or preserve_types) exceeds "
+                f"target_tokens ({mandatory_tokens} > {target_tokens})"
             )
+
+        if mandatory_tokens == target_tokens:
             elapsed_ms = (time.time() - start_time) * 1000
             metrics = self.create_metrics(
-                original_segments, compressed, elapsed_ms, "truncate"
+                original_segments, mandatory_segments, elapsed_ms, "truncate"
             )
-            return compressed, metrics
+            return mandatory_segments, metrics
 
         # Step 3: Allocate remaining budget to other segments
-        available_tokens = target_tokens - critical_tokens
+        available_tokens = target_tokens - mandatory_tokens
 
         if not other_segments or available_tokens <= 0:
             # Only CRITICAL segments fit
             elapsed_ms = (time.time() - start_time) * 1000
             metrics = self.create_metrics(
-                original_segments, critical_segments, elapsed_ms, "truncate"
+                original_segments, mandatory_segments, elapsed_ms, "truncate"
             )
-            return critical_segments, metrics
+            return mandatory_segments, metrics
 
         # Step 4: Truncate other segments proportionally
         compressed_other = self._truncate_segments(
@@ -116,7 +121,7 @@ class TruncateCompressor(ContextCompressor):
         )
 
         # Step 5: Combine results
-        result = critical_segments + compressed_other
+        result = mandatory_segments + compressed_other
 
         elapsed_ms = (time.time() - start_time) * 1000
         metrics = self.create_metrics(
