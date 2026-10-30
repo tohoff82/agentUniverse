@@ -87,9 +87,9 @@ class ISWorkPattern(WorkPattern):
                     checkpoint_count,
                     execution_context
                 )
-                execution_context['corrections_made'] += 1
-                corrected = True
                 if correction_result:
+                    execution_context['corrections_made'] += 1
+                    corrected = True
                     # Feed the corrected content back so the next supervision round
                     # reviews the corrected implementation instead of the original one.
                     input_object.add_data('implementation_result', OutputObject(correction_result))
@@ -169,9 +169,9 @@ class ISWorkPattern(WorkPattern):
                     checkpoint_count,
                     execution_context
                 )
-                execution_context['corrections_made'] += 1
-                corrected = True
                 if correction_result:
+                    execution_context['corrections_made'] += 1
+                    corrected = True
                     # Feed the corrected content back so the next supervision round
                     # reviews the corrected implementation instead of the original one.
                     input_object.add_data('implementation_result', OutputObject(correction_result))

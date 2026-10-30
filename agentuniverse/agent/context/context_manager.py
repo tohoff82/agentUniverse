@@ -251,6 +251,8 @@ class ContextManager(ComponentBase):
             content=content,
             tokens=tokens,
             session_id=session_id,
+            agent_id=kwargs.get("agent_id", window.agent_id),
+            task_id=kwargs.get("task_id", window.task_id),
             parent_id=kwargs.get("parent_id"),
             related_ids=kwargs.get("related_ids", []),
         )
@@ -258,10 +260,17 @@ class ContextManager(ComponentBase):
         # Store in hot storage
         if self._hot_store:
             self._hot_store.add([segment], session_id=session_id)
+            self._reconcile_window(window)
 
-        # Update window tracking
-        window.add_segment_id(segment.id)
-        window.update_total_tokens(tokens, operation="add")
+            # Storage-level eviction and no-op compression can otherwise leave
+            # the window over budget after the add has completed.
+            if window.is_over_budget():
+                self._make_room(window, 0)
+                self._reconcile_window(window)
+        else:
+            # Preserve bookkeeping behavior when no store is configured.
+            window.add_segment_id(segment.id)
+            window.update_total_tokens(tokens, operation="add")
 
         return segment
 
@@ -395,11 +404,12 @@ class ContextManager(ComponentBase):
         if not self._hot_store:
             return
 
-        current_available = window.calculate_available_tokens()
-        if current_available >= needed_tokens:
+        tokens_to_free = max(
+            0,
+            window.total_tokens + needed_tokens - window.calculate_input_tokens()
+        )
+        if tokens_to_free == 0:
             return  # Already have space
-
-        tokens_to_free = needed_tokens - current_available
 
         # Strategy 1: Quick prune of expired and EPHEMERAL segments
         pruned = self._hot_store.prune(
@@ -415,7 +425,7 @@ class ContextManager(ComponentBase):
             window.segment_ids = [seg.id for seg in remaining]
 
         # Check if pruning freed enough space
-        if window.calculate_available_tokens() >= needed_tokens:
+        if window.total_tokens + needed_tokens <= window.calculate_input_tokens():
             return
 
         # Strategy 2: Intelligent compression (NEW in Phase 2)
@@ -442,14 +452,14 @@ class ContextManager(ComponentBase):
                 self._hot_store.delete(window.session_id)  # Clear old segments
                 self._hot_store.add(compressed, session_id=window.session_id)  # Add compressed
 
-                # Update window tracking
-                window.total_tokens = sum(seg.tokens for seg in compressed)
-                window.segment_ids = [seg.id for seg in compressed]
+                # Update tracking from what the store actually retained.
+                self._reconcile_window(window)
 
                 # Log compression metrics (optional - for debugging/monitoring)
                 # print(f"Compression: {metrics.compression_ratio:.2%}, Loss: {metrics.information_loss_estimate:.2%}")
 
-                return  # Compression successful
+                if window.total_tokens + needed_tokens <= window.calculate_input_tokens():
+                    return  # Compression made enough room
 
             except Exception as e:
                 # Compression failed, fall back to simple eviction
@@ -491,6 +501,15 @@ class ContextManager(ComponentBase):
 
         if to_remove:
             self.delete_context(window.session_id, segment_ids=to_remove)
+
+    def _reconcile_window(self, window: ContextWindow) -> None:
+        """Reconcile the window ledger with the actual hot-store contents."""
+        if not self._hot_store:
+            return
+        limit = max(100, len(window.segment_ids) + 1)
+        segments = self._hot_store.get(window.session_id, limit=limit)
+        window.segment_ids = [segment.id for segment in segments]
+        window.total_tokens = sum(segment.tokens for segment in segments)
 
     def _count_tokens(self, content: str) -> int:
         """Count tokens in content using LLM tokenizer.

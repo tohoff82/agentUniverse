@@ -118,6 +118,15 @@ class SupervisionAgentTemplate(AgentTemplate):
         # Look for explicit correction markers in the output
         output_lower = output.lower()
 
+        # An explicit boolean decision takes precedence over the positive phrase
+        # contained in the field name itself (for example, "Needs Correction").
+        import re
+        explicit_decision = re.search(
+            r'needs[ _-]*correction\s*:\s*(true|false)\b', output_lower
+        )
+        if explicit_decision:
+            return explicit_decision.group(1) == 'true'
+
         # Positive indicators (needs correction)
         correction_needed_markers = [
             'needs correction',

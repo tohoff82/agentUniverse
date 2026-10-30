@@ -261,7 +261,7 @@ class Memory(ComponentBase):
             self.max_tokens = component_configer.max_tokens
         if component_configer.memory_compressor:
             self.memory_compressor = component_configer.memory_compressor
-        if component_configer.memory_storages:
+        if component_configer.memory_storages is not None:
             self.memory_storages = component_configer.memory_storages
         if component_configer.memory_retrieval_storage:
             self.memory_retrieval_storage = component_configer.memory_retrieval_storage
